@@ -33,6 +33,49 @@ from ray._private.utils import open_log, try_to_create_directory, try_to_symlink
 # using logging.basicConfig in its entry/init points.
 logger = logging.getLogger(__name__)
 
+from pydantic import BaseModel
+from pathlib import Path
+
+class PydevConfig(BaseModel):
+    sys_path: str
+    client: str
+    port: int
+    client_access_token: str
+    ppid: int
+
+
+def get_debugpy():
+    import importlib
+    return importlib.import_module("debugpy")
+    try:
+        return importlib.import_module("debugpy")
+    except Exception:
+        return None
+
+def create_pydev_config() -> PydevConfig | None:
+    debugpy = get_debugpy()
+    if debugpy is None:
+        logger.info("Pydev is not available, vs code debug support is not available.")
+        return None
+
+    if not debugpy.is_client_connected():
+        logger.info("No VS code was available during boot.")
+        return None
+
+    pydevd = debugpy.server.api.pydevd
+    setup = pydevd.SetupHolder.setup
+
+    pydev_config = PydevConfig(
+        ppid=os.getpid(),
+        sys_path=str(Path(debugpy.__file__).resolve().parents[1]),
+        client=setup.get("client"),
+        port=setup.get("port"),
+        client_access_token=setup.get("client-access-token"),
+    )
+
+    logger.info("Created VSCode pydev config %s", pydev_config)
+    return pydev_config
+
 
 class Node:
     """An encapsulation of the Ray processes on a single node.
@@ -1296,6 +1339,15 @@ class Node:
                 self._ray_params.tracing_startup_hook.encode(),
                 True,
                 ray_constants.KV_NAMESPACE_TRACING,
+            )
+
+        pydev = create_pydev_config()
+        if pydev:
+            self.get_gcs_client().internal_kv_put(
+                b"pydev_config",
+                pydev.model_dump_json(),
+                True,
+                ray_constants.KV_NAMESPACE_PDB
             )
 
     def start_head_processes(self):
